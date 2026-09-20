@@ -264,8 +264,8 @@ __forceinline__ void ggml_cuda_mmq_decode_ptq1_0_qs4(uint32_t packed, int * __re
 
 #    pragma unroll
     for (int t = 0; t < 5; ++t) {
-        const uint32_t w_lo = v_lo * 3;
-        const uint32_t w_hi = v_hi * 3;
+        const uint32_t w_lo = v_lo + (v_lo << 1);
+        const uint32_t w_hi = v_hi + (v_hi << 1);
         v_lo                = w_lo & 0x00FF00FF;
         v_hi                = w_hi & 0x00FF00FF;
         dst[t * stride]     = __vsub4(__byte_perm(w_lo, w_hi, 0x7531), 0x01010101);
@@ -324,9 +324,9 @@ static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_ptq1_0(const cha
             uint32_t v = (uint32_t) bxi->qh[0] | ((uint32_t) bxi->qh[1] << 16);
 #    pragma unroll
             for (int t = 0; t < 4; t += 2) {
-                const uint32_t w0 = v * 3;
+                const uint32_t w0 = v + (v << 1);
                 v                 = w0 & 0x00FF00FF;
-                const uint32_t w1 = v * 3;
+                const uint32_t w1 = v + (v << 1);
                 v                 = w1 & 0x00FF00FF;
                 row[30 + t / 2]   = __vsub4(__byte_perm(w0, w1, 0x7531), 0x01010101);
             }
