@@ -120,7 +120,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     const float   * y_df = (const float *) y;
 
     constexpr int packed_ints_per_row = MMQ_TILE_NE_K / 2;
-    constexpr int packed_bytes_per_row = (packed_ints_per_row + 1) * sizeof(int);
+    constexpr int packed_stride_ints = packed_ints_per_row + 1;
 
 #pragma unroll
     for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += VDR_PTQ1_0_Q8_1_MMQ) {
@@ -133,8 +133,8 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 #pragma unroll
             for (int i0 = 0; i0 < I; i0 += warp_size) {
                 const int i = i0 + threadIdx.x;
-                const uint8_t * qptr = x_qs + i * packed_bytes_per_row + k0;
-                const uint32_t q = uint32_t(qptr[0]) | (uint32_t(qptr[1]) << 8);
+                const uint32_t word = ((const uint32_t *) x_qs)[i * packed_stride_ints + k0 / 4];
+                const uint32_t q = (word >> (8 * (k0 & 3))) & 0xFFFFu;
 
                 const int qe = __byte_perm(0x020100FF, 0x020100FF, q >> 0);
                 const int qo = __byte_perm(0x020100FF, 0x020100FF, q >> 2);
