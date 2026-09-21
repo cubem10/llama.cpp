@@ -107,6 +107,51 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     }
 }
 
+template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_ptq1_0_q8_1_dp4a(
+        const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00) {
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+    constexpr int nwarps    = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
+    constexpr int I         = ggml_cuda_mmq_get_I(type, J, fallback);
+
+    constexpr tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(GGML_TYPE_PTQ1_0, I);
+    const uint8_t * x_qs = (const uint8_t *) x;
+    const float   * x_df = (const float *) ((const int *) x + txs.qs);
+    const int     * y_qs = (const int *) y + 4;
+    const float   * y_df = (const float *) y;
+
+    constexpr int packed_ints_per_row = MMQ_TILE_NE_K / 2;
+    constexpr int packed_bytes_per_row = (packed_ints_per_row + 1) * sizeof(int);
+
+#pragma unroll
+    for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += VDR_PTQ1_0_Q8_1_MMQ) {
+        const int k0 = k00 + k01;
+
+#pragma unroll
+        for (int j0 = 0; j0 < J; j0 += nwarps) {
+            const int j = j0 + threadIdx.y;
+
+#pragma unroll
+            for (int i0 = 0; i0 < I; i0 += warp_size) {
+                const int i = i0 + threadIdx.x;
+                const uint16_t q = *((const uint16_t *) (x_qs + i * packed_bytes_per_row + k0));
+
+                const int qe = __byte_perm(0x020100FF, 0x020100FF, q >> 0);
+                const int qo = __byte_perm(0x020100FF, 0x020100FF, q >> 2);
+                const int qx = __byte_perm(qe, qo, 0x5140);
+                const int qy = __byte_perm(qe, qo, 0x7362);
+
+                int sumi = 0;
+                sumi = ggml_cuda_dp4a(qx, y_qs[j * MMQ_TILE_Y_K + k01 + 0], sumi);
+                sumi = ggml_cuda_dp4a(qy, y_qs[j * MMQ_TILE_Y_K + k01 + 1], sumi);
+
+                const float dA = x_df[i * 2 + k0 / (QK_PTQ1_0 / 4)];
+                const float dB = y_df[j * MMQ_TILE_Y_K + (k0 / QI8_1) % (MMQ_TILE_NE_K / QI8_1)];
+                sum[j0 / nwarps * I / warp_size + i0 / warp_size] += dA * dB * sumi;
+            }
+        }
+    }
+}
+
 template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_q8_0_q8_1_dp4a(
         const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00) {
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
