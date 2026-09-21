@@ -1,0 +1,154 @@
+name: Tesla P4 PTQ1 benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "cubem10/llama.cpp branch, tag, or commit SHA"
+        required: true
+        default: "perf/tesla-p4-ptq1"
+      sanitizer:
+        description: "Run compute-sanitizer first"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helium-p4
+  cancel-in-progress: false
+
+jobs:
+  p4-test:
+    runs-on: [self-hosted, linux, x64, tesla-p4]
+
+    timeout-minutes: 120
+
+    env:
+      SOURCE_DIR: ${{ github.workspace }}/llama.cpp
+      BUILD_DIR: /media/cubem10/llama/gha-build
+      MODEL: /media/cubem10/llama/models/Bonsai-2-27B-PTQ1_0.gguf
+
+    steps:
+      - name: System information
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          nvidia-smi
+          nvcc --version
+          cmake --version
+          compute-sanitizer --version
+
+      - name: Checkout llama.cpp
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          rm -rf "$SOURCE_DIR"
+
+          git clone \
+            --filter=blob:none \
+            https://github.com/cubem10/llama.cpp.git \
+            "$SOURCE_DIR"
+
+          cd "$SOURCE_DIR"
+
+          git fetch origin "${{ inputs.ref }}"
+          git checkout --detach FETCH_HEAD
+
+          echo "Testing commit:"
+          git log -1 --oneline
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cmake \
+            -S "$SOURCE_DIR" \
+            -B "$BUILD_DIR" \
+            -DGGML_CUDA=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=61 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_FLAGS="-lineinfo"
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cmake --build "$BUILD_DIR" -j16
+
+      - name: CUDA sanitizer smoke test
+        if: ${{ inputs.sanitizer }}
+        shell: bash
+        run: |
+          set -o pipefail
+
+          LOG="$GITHUB_WORKSPACE/compute-sanitizer.log"
+
+          compute-sanitizer \
+            --tool memcheck \
+            --error-exitcode=99 \
+            --print-limit=100 \
+            "$BUILD_DIR/bin/llama-bench" \
+              -m "$MODEL" \
+              -ngl 99 \
+              -p 32 \
+              -n 0 \
+            2>&1 | tee "$LOG"
+
+          status=${PIPESTATUS[0]}
+
+          {
+            echo "## compute-sanitizer"
+            echo
+            if [ "$status" -eq 0 ]; then
+              echo "✅ No CUDA memory errors detected."
+            else
+              echo "❌ compute-sanitizer failed with exit code $status."
+            fi
+            echo
+            echo '```text'
+            tail -n 80 "$LOG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$status"
+
+      - name: Benchmark
+        shell: bash
+        run: |
+          set -o pipefail
+
+          LOG="$GITHUB_WORKSPACE/llama-bench.log"
+
+          "$BUILD_DIR/bin/llama-bench" \
+            -m "$MODEL" \
+            -ngl 99 \
+            -p 512,2048,8192 \
+            -n 128 \
+            2>&1 | tee "$LOG"
+
+          status=${PIPESTATUS[0]}
+
+          {
+            echo "## Tesla P4 benchmark"
+            echo
+            echo "**Commit:**"
+            echo
+            echo '```text'
+            git -C "$SOURCE_DIR" log -1 --oneline
+            echo '```'
+            echo
+            echo "**Results:**"
+            echo
+            echo '```text'
+            cat "$LOG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$status"
