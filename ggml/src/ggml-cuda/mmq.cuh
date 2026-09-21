@@ -580,7 +580,7 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
 #if !defined(GGML_USE_HIP)
             case GGML_TYPE_PTQ1_0:
                 return ggml_cuda_mmq_util_funcs(VDR_PTQ1_0_Q8_1_MMQ, ggml_cuda_mmq_load_tiles_ptq1_0<type, J, fallback>,
-                                                ggml_cuda_mmq_vec_dot_q8_0_q8_1_dp4a<type, J, fallback>,
+                                                ggml_cuda_mmq_vec_dot_ptq1_0_q8_1_dp4a<type, J, fallback>,
                                                 ggml_cuda_mmq_write_back_dp4a<type, J, fallback>);
 #endif
             case GGML_TYPE_Q4_0:
