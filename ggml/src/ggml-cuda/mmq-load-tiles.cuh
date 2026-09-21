@@ -392,18 +392,19 @@ static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_ptq1_0(const cha
     }
 #    else
     constexpr int scale_entries_per_row = blocks_per_iter;
-    constexpr int rows_per_warp = warp_size / scale_entries_per_row;
-    const int scale_block = threadIdx.x % scale_entries_per_row;
+    constexpr int scale_entry_count = I * scale_entries_per_row;
+    const int tid = threadIdx.y * warp_size + threadIdx.x;
 
 #        pragma unroll
-    for (int i0 = 0; i0 < I; i0 += nwarps * rows_per_warp) {
-        int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / scale_entries_per_row;
+    for (int linear = tid; linear < scale_entry_count; linear += nwarps * warp_size) {
+        int i = linear / scale_entries_per_row;
+        const int scale_block = linear % scale_entries_per_row;
         if (fallback) {
             i = min(i, i_max);
         }
 
         const block_ptq1_0 * bxi = (const block_ptq1_0 *) x + kbx0 + i * stride + scale_block;
-        x_df[i * scale_entries_per_row + scale_block] = bxi->d;
+        x_df[linear] = bxi->d;
     }
 #    endif
 }
