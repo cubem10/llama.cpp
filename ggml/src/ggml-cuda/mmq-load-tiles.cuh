@@ -257,6 +257,11 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 }
 
 #if !defined(GGML_USE_HIP)
+static __device__ __forceinline__ uint8_t ggml_cuda_pack_ptq1_0_qs4(const uint32_t q) {
+    const uint32_t c = __vadd4(q, 0x01010101);
+    return uint8_t((c & 0x00000003) | ((c >> 6) & 0x0000000C) | ((c >> 12) & 0x00000030) | ((c >> 18) & 0x000000C0));
+}
+
 static __device__
 __forceinline__ void ggml_cuda_mmq_decode_ptq1_0_qs4(uint32_t packed, int * __restrict__ dst, int stride) {
     uint32_t v_lo = __byte_perm(packed, 0, 0x4140);
@@ -269,6 +274,22 @@ __forceinline__ void ggml_cuda_mmq_decode_ptq1_0_qs4(uint32_t packed, int * __re
         v_lo                = w_lo & 0x00FF00FF;
         v_hi                = w_hi & 0x00FF00FF;
         dst[t * stride]     = __vsub4(__byte_perm(w_lo, w_hi, 0x7531), 0x01010101);
+    }
+}
+
+static __device__
+__forceinline__ void ggml_cuda_mmq_decode_ptq1_0_qs4_packed(uint32_t packed, uint8_t * __restrict__ dst, int stride) {
+    uint32_t v_lo = __byte_perm(packed, 0, 0x4140);
+    uint32_t v_hi = __byte_perm(packed, 0, 0x4342);
+
+#    pragma unroll
+    for (int t = 0; t < 5; ++t) {
+        const uint32_t w_lo = v_lo + (v_lo << 1);
+        const uint32_t w_hi = v_hi + (v_hi << 1);
+        v_lo                = w_lo & 0x00FF00FF;
+        v_hi                = w_hi & 0x00FF00FF;
+        const uint32_t q    = __vsub4(__byte_perm(w_lo, w_hi, 0x7531), 0x01010101);
+        dst[t * stride]     = ggml_cuda_pack_ptq1_0_qs4(q);
     }
 }
 
@@ -287,9 +308,9 @@ static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_ptq1_0(const cha
     int *   x_qs = (int *) x_tile;
     float * x_df = (float *) (x_qs + 2 * MMQ_TILE_NE_K);
 #    else
-    constexpr tile_x_sizes txs  = mmq_get_dp4a_tile_x_sizes(GGML_TYPE_Q8_0, I);
-    int *                  x_qs = (int *) x_tile;
-    float *                x_df = (float *) (x_qs + txs.qs);
+    constexpr tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(GGML_TYPE_PTQ1_0, I);
+    int *   x_qs = (int *) x_tile;
+    float * x_df = (float *) (x_qs + txs.qs);
 #    endif
 
     constexpr int blocks_per_iter   = MMQ_ITER_K / QK_PTQ1_0;
@@ -311,9 +332,6 @@ static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_ptq1_0(const cha
         const block_ptq1_0 * bxi = (const block_ptq1_0 *) x + kbx0 + i * stride + kbx;
 #    if defined(TURING_MMA_AVAILABLE)
         int * row = x_qs + i * sram_stride + kbx * (QK_PTQ1_0 / 4);
-#    else
-        int * row = x_qs + i * (2 * MMQ_TILE_NE_K + 1) + kbx * (QK_PTQ1_0 / 4);
-#    endif
 
         if (lane < 4) {
             ggml_cuda_mmq_decode_ptq1_0_qs4(get_int_b4(bxi->qs, lane), row + lane, 4);
@@ -322,7 +340,7 @@ static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_ptq1_0(const cha
             ggml_cuda_mmq_decode_ptq1_0_qs4(get_int_b4(bxi->qs + 16, g), row + 20 + g, 2);
         } else if (lane == 6) {
             uint32_t v = (uint32_t) bxi->qh[0] | ((uint32_t) bxi->qh[1] << 16);
-#    pragma unroll
+#        pragma unroll
             for (int t = 0; t < 4; t += 2) {
                 const uint32_t w0 = v + (v << 1);
                 v                 = w0 & 0x00FF00FF;
@@ -331,15 +349,38 @@ static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_ptq1_0(const cha
                 row[30 + t / 2]   = __vsub4(__byte_perm(w0, w1, 0x7531), 0x01010101);
             }
         }
+#    else
+        constexpr int packed_ints_per_row = MMQ_TILE_NE_K / 2;
+        uint8_t * row = (uint8_t *) (x_qs + i * (packed_ints_per_row + 1) + kbx * (QK_PTQ1_0 / 16));
+
+        if (lane < 4) {
+            ggml_cuda_mmq_decode_ptq1_0_qs4_packed(get_int_b4(bxi->qs, lane), row + lane, 4);
+        } else if (lane < 6) {
+            const int g = lane - 4;
+            ggml_cuda_mmq_decode_ptq1_0_qs4_packed(get_int_b4(bxi->qs + 16, g), row + 20 + g, 2);
+        } else if (lane == 6) {
+            uint32_t v = (uint32_t) bxi->qh[0] | ((uint32_t) bxi->qh[1] << 16);
+#        pragma unroll
+            for (int t = 0; t < 4; t += 2) {
+                const uint32_t w0 = v + (v << 1);
+                v                 = w0 & 0x00FF00FF;
+                const uint32_t w1 = v + (v << 1);
+                v                 = w1 & 0x00FF00FF;
+                const uint32_t q  = __vsub4(__byte_perm(w0, w1, 0x7531), 0x01010101);
+                row[30 + t / 2]   = ggml_cuda_pack_ptq1_0_qs4(q);
+            }
+        }
+#    endif
     }
 
+#    if defined(TURING_MMA_AVAILABLE)
     constexpr int scale_entries_per_block = QK_PTQ1_0 / QK8_1;
     constexpr int scale_entries_per_row   = blocks_per_iter * scale_entries_per_block;
     constexpr int rows_per_warp           = warp_size / scale_entries_per_row;
     const int     ksx                     = threadIdx.x % scale_entries_per_row;
     const int     scale_block             = ksx / scale_entries_per_block;
 
-#    pragma unroll
+#        pragma unroll
     for (int i0 = 0; i0 < I; i0 += nwarps * rows_per_warp) {
         int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / scale_entries_per_row;
         if (fallback) {
@@ -347,12 +388,24 @@ static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_ptq1_0(const cha
         }
 
         const block_ptq1_0 * bxi = (const block_ptq1_0 *) x + kbx0 + i * stride + scale_block;
-#    if defined(TURING_MMA_AVAILABLE)
         x_df[i * sram_stride + ksx] = bxi->d;
-#    else
-        x_df[i * (2 * MMQ_TILE_NE_K / QI8_0) + i / (QI8_0 / 2) + ksx] = bxi->d;
-#    endif
     }
+#    else
+    constexpr int scale_entries_per_row = blocks_per_iter;
+    constexpr int rows_per_warp = warp_size / scale_entries_per_row;
+    const int scale_block = threadIdx.x % scale_entries_per_row;
+
+#        pragma unroll
+    for (int i0 = 0; i0 < I; i0 += nwarps * rows_per_warp) {
+        int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / scale_entries_per_row;
+        if (fallback) {
+            i = min(i, i_max);
+        }
+
+        const block_ptq1_0 * bxi = (const block_ptq1_0 *) x + kbx0 + i * stride + scale_block;
+        x_df[i * scale_entries_per_row + scale_block] = bxi->d;
+    }
+#    endif
 }
 #endif
 
