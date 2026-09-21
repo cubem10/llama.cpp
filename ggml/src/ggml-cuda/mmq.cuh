@@ -388,6 +388,7 @@ static constexpr __device__ int ggml_cuda_mmq_get_rows_per_warp(ggml_type type, 
 
 #define MMQ_DP4A_TXS_Q4_0    tile_x_sizes{I*MMQ_TILE_NE_K   + I, I*MMQ_TILE_NE_K/QI4_0   + I/QI4_0,     0}
 #define MMQ_DP4A_TXS_Q4_1    tile_x_sizes{I*MMQ_TILE_NE_K   + I, I*MMQ_TILE_NE_K/QI4_1   + I/QI4_1,     0}
+#define MMQ_DP4A_TXS_PTQ1_0  tile_x_sizes{I*(MMQ_TILE_NE_K/2 + 1), I*2,                                      0}
 #define MMQ_DP4A_TXS_Q8_0    tile_x_sizes{I*MMQ_TILE_NE_K*2 + I, I*MMQ_TILE_NE_K*2/QI8_0 + I/(QI8_0/2), 0}
 #define MMQ_DP4A_TXS_Q8_0_16 tile_x_sizes{I*MMQ_TILE_NE_K*2 + I, I*MMQ_TILE_NE_K*4/QI8_0 + I/(QI8_0/4), 0}
 #define MMQ_DP4A_TXS_Q8_1    tile_x_sizes{I*MMQ_TILE_NE_K*2 + I, I*MMQ_TILE_NE_K*2/QI8_1 + I/(QI8_1/2), 0}
@@ -405,7 +406,7 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
             return MMQ_DP4A_TXS_Q8_0;
 #if !defined(GGML_USE_HIP)
         case GGML_TYPE_PTQ1_0:
-            return MMQ_DP4A_TXS_Q8_0;
+            return MMQ_DP4A_TXS_PTQ1_0;
 #endif
         case GGML_TYPE_Q4_0:    return MMQ_DP4A_TXS_Q4_0;
         case GGML_TYPE_Q4_1:    return MMQ_DP4A_TXS_Q4_1;
