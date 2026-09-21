@@ -351,7 +351,7 @@ static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_ptq1_0(const cha
         }
 #    else
         constexpr int packed_ints_per_row = MMQ_TILE_NE_K / 2;
-        uint8_t * row = (uint8_t *) (x_qs + i * (packed_ints_per_row + 1) + kbx * (QK_PTQ1_0 / 16));
+        uint8_t * row = (uint8_t *) (x_qs + i * (packed_ints_per_row + 1)) + kbx * (QK_PTQ1_0 / 4);
 
         if (lane < 4) {
             ggml_cuda_mmq_decode_ptq1_0_qs4_packed(get_int_b4(bxi->qs, lane), row + lane, 4);
